@@ -103,11 +103,15 @@ func (b *Batcher) Queue(o interface{}) bool {
 
 func (b *Batcher) push(o interface{}) (err error) {
 	b.Lock()
-	b.batch[b.count] = o
 
-	if b.count++; b.count >= b.cfg.BatchSize {
-		err = b.flush()
+	if b.count >= b.cfg.BatchSize {
+		if err = b.flush(); err != nil {
+			return
+		}
 	}
+
+	b.batch[b.count] = o
+	b.count++
 
 	b.Unlock()
 	return
