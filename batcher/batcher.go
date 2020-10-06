@@ -106,6 +106,7 @@ func (b *Batcher) push(o interface{}) (err error) {
 
 	if b.count >= b.cfg.BatchSize {
 		if err = b.flush(); err != nil {
+			b.Unlock()
 			return
 		}
 	}
@@ -176,8 +177,6 @@ func (b *Batcher) dispatch() {
 			if err = b.push(o); err == nil {
 				break
 			}
-
-			b.Errorf("Unable to flush batch: %s", err)
 
 			// Try to requeue if there's enough space
 			select {
