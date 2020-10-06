@@ -41,8 +41,8 @@ type Batcher struct {
 	chanIn    chan interface{}
 	chanClose chan struct{}
 
-	stats Stats
-	dErr  error
+	stats      Stats
+	flushError error
 
 	wg sync.WaitGroup
 	sync.Mutex
@@ -119,12 +119,16 @@ func (b *Batcher) push(o interface{}) (err error) {
 
 func (b *Batcher) flush() (err error) {
 	if err = b.cfg.Flush(b.batch[:b.count]); err != nil {
+		b.Errorf("Flush failed: %s", err)
 		atomic.AddUint64(&b.stats.FlushFailed, 1)
+		time.Sleep(time.Second)
+		b.flushError = err
 		return
 	}
 
 	atomic.AddUint64(&b.stats.Sent, uint64(b.count))
 	b.count = 0
+
 	return
 }
 
@@ -142,6 +146,7 @@ func (b *Batcher) tryFlush() error {
 func (b *Batcher) dispatch() {
 	defer b.wg.Done()
 
+	var err error
 	for {
 		select {
 		case <-b.chanClose:
@@ -151,30 +156,28 @@ func (b *Batcher) dispatch() {
 			for {
 				select {
 				case o := <-b.chanIn:
-					if b.dErr = b.push(o); b.dErr != nil {
-						b.Errorf("Unable to flush: %s", b.dErr)
+					if err = b.push(o); err != nil {
 						return
 					}
 
 				default:
 					b.Infof("Buffer drained, flushing")
 
-					if b.dErr = b.tryFlush(); b.dErr != nil {
-						b.Errorf("Unable to flush: %s", b.dErr)
-					} else {
-						b.Infof("Buffer flushed")
+					if err = b.tryFlush(); err != nil {
+						return
 					}
 
+					b.Infof("Buffer flushed")
 					return
 				}
 			}
 
 		case o := <-b.chanIn:
-			if b.dErr = b.push(o); b.dErr == nil {
+			if err = b.push(o); err == nil {
 				break
 			}
 
-			b.Errorf("Unable to flush batch: %s", b.dErr)
+			b.Errorf("Unable to flush batch: %s", err)
 
 			// Try to requeue if there's enough space
 			select {
@@ -212,5 +215,5 @@ func (b *Batcher) periodicFlush() {
 func (b *Batcher) Close() error {
 	close(b.chanClose)
 	b.wg.Wait()
-	return b.dErr
+	return b.flushError
 }
