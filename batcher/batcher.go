@@ -17,10 +17,8 @@ type Config struct {
 	BufferSize int
 	Flush      FlushFunc
 
-	Batch struct {
-		Size          int
-		FlushInterval time.Duration
-	}
+	BatchSize     int
+	FlushInterval time.Duration
 
 	Logger logger.Logger
 }
@@ -61,12 +59,12 @@ func New(c Config) (b *Batcher, err error) {
 		c.BufferSize = 10000
 	}
 
-	if c.Batch.Size == 0 {
-		c.Batch.Size = 100
+	if c.BatchSize == 0 {
+		c.BatchSize = 100
 	}
 
-	if c.Batch.FlushInterval == 0 {
-		c.Batch.FlushInterval = time.Second
+	if c.FlushInterval == 0 {
+		c.FlushInterval = time.Second
 	}
 
 	if c.Logger == nil {
@@ -76,7 +74,7 @@ func New(c Config) (b *Batcher, err error) {
 	b = &Batcher{
 		cfg: c,
 
-		batch:     make([]interface{}, c.Batch.Size),
+		batch:     make([]interface{}, c.BatchSize),
 		chanIn:    make(chan interface{}, c.BufferSize),
 		chanClose: make(chan struct{}),
 
@@ -107,7 +105,7 @@ func (b *Batcher) push(o interface{}) (err error) {
 	b.Lock()
 	b.batch[b.count] = o
 
-	if b.count++; b.count >= b.cfg.Batch.Size {
+	if b.count++; b.count >= b.cfg.BatchSize {
 		err = b.flush()
 	}
 
@@ -116,10 +114,12 @@ func (b *Batcher) push(o interface{}) (err error) {
 }
 
 func (b *Batcher) flush() (err error) {
-	if err = b.cfg.Flush(b.batch); err != nil {
+	if err = b.cfg.Flush(b.batch[:b.count]); err != nil {
+		atomic.AddUint64(&b.stats.FlushFailed, 1)
 		return
 	}
 
+	atomic.AddUint64(&b.stats.Sent, uint64(b.count))
 	b.count = 0
 	return
 }
@@ -141,8 +141,8 @@ func (b *Batcher) dispatch() {
 	for {
 		select {
 		case <-b.chanClose:
-			// Flush channel
-			b.Warnf("Draining buffer (%d events)", len(b.chanIn))
+			// Drain channel
+			b.Infof("Draining buffer (%d events)", len(b.chanIn))
 
 			for {
 				select {
@@ -153,12 +153,12 @@ func (b *Batcher) dispatch() {
 					}
 
 				default:
-					b.Warnf("Buffer drained, flushing")
+					b.Infof("Buffer drained, flushing")
 
 					if b.dErr = b.tryFlush(); b.dErr != nil {
 						b.Errorf("Unable to flush: %s", b.dErr)
 					} else {
-						b.Warnf("Buffer flushed")
+						b.Infof("Buffer flushed")
 					}
 
 					return
@@ -183,8 +183,13 @@ func (b *Batcher) dispatch() {
 	}
 }
 
+// Stats returns batcher's stats
+func (b *Batcher) Stats() Stats {
+	return b.stats
+}
+
 func (b *Batcher) periodicFlush() {
-	tick := time.NewTicker(b.cfg.Batch.FlushInterval)
+	tick := time.NewTicker(b.cfg.FlushInterval)
 
 	defer func() {
 		tick.Stop()
