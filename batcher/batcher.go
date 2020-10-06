@@ -172,13 +172,11 @@ func (b *Batcher) dispatch() {
 
 			b.Errorf("Unable to flush batch: %s", b.dErr)
 
-			// Try to requeue if there's space
+			// Try to requeue if there's enough space
 			select {
 			case b.chanIn <- o:
 			default:
 			}
-
-			return
 		}
 	}
 }
