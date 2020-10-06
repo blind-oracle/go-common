@@ -122,7 +122,6 @@ func (b *Batcher) flush() (err error) {
 	if err = b.cfg.Flush(b.batch[:b.count]); err != nil {
 		b.Errorf("Flush failed: %s", err)
 		atomic.AddUint64(&b.stats.FlushFailed, 1)
-		time.Sleep(time.Second)
 		b.flushError = err
 		return
 	}
@@ -144,52 +143,28 @@ func (b *Batcher) tryFlush() error {
 	return b.flush()
 }
 
-func (b *Batcher) dispatch() {
-	defer b.wg.Done()
+func (b *Batcher) drain() {
+	// Drain channel
+	b.Infof("Draining buffer (%d events)", len(b.chanIn))
 
-	var err error
 	for {
 		select {
-		case <-b.chanClose:
-			// Drain channel
-			b.Infof("Draining buffer (%d events)", len(b.chanIn))
-
-			for {
-				select {
-				case o := <-b.chanIn:
-					if err = b.push(o); err != nil {
-						return
-					}
-
-				default:
-					b.Infof("Buffer drained, flushing")
-
-					if err = b.tryFlush(); err != nil {
-						return
-					}
-
-					b.Infof("Buffer flushed")
-					return
-				}
-			}
-
 		case o := <-b.chanIn:
-			if err = b.push(o); err == nil {
-				break
+			if err := b.push(o); err != nil {
+				return
 			}
 
-			// Try to requeue if there's enough space
-			select {
-			case b.chanIn <- o:
-			default:
+		default:
+			b.Infof("Buffer drained, flushing")
+
+			if err := b.tryFlush(); err != nil {
+				return
 			}
+
+			b.Infof("Buffer flushed")
+			return
 		}
 	}
-}
-
-// Stats returns batcher's stats
-func (b *Batcher) Stats() Stats {
-	return b.stats
 }
 
 func (b *Batcher) periodicFlush() {
@@ -208,6 +183,42 @@ func (b *Batcher) periodicFlush() {
 			return
 		}
 	}
+}
+
+func (b *Batcher) dispatch() {
+	defer b.wg.Done()
+
+	var err error
+	for {
+		select {
+		case <-b.chanClose:
+			b.drain()
+			return
+
+		case o := <-b.chanIn:
+
+		loop:
+			for {
+				select {
+				case <-b.chanClose:
+					b.drain()
+					return
+
+				default:
+					if err = b.push(o); err == nil {
+						break loop
+					}
+
+					time.Sleep(time.Second)
+				}
+			}
+		}
+	}
+}
+
+// Stats returns batcher's stats
+func (b *Batcher) Stats() Stats {
+	return b.stats
 }
 
 // Close flushes the buffers and stops Batcher
