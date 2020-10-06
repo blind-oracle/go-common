@@ -128,6 +128,7 @@ func (b *Batcher) flush() (err error) {
 
 	atomic.AddUint64(&b.stats.Sent, uint64(b.count))
 	b.count = 0
+	b.flushError = nil
 
 	return
 }
